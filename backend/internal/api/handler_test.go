@@ -141,6 +141,11 @@ func TestCalculateErrors(t *testing.T) {
 			`{"operation":"add","a":1,"b":2` + strings.Repeat(" ", maxBodyBytes) + `}`,
 			413, codePayloadTooLarge, "must not exceed",
 		},
+		{
+			"oversized body after a valid object",
+			`{"operation":"add","a":1,"b":2}` + strings.Repeat(" ", 2*maxBodyBytes),
+			413, codePayloadTooLarge, "must not exceed",
+		},
 	}
 
 	for _, tt := range tests {

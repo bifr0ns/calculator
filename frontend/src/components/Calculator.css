@@ -127,6 +127,7 @@
   margin: 0;
   opacity: 0;
   cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .operation__symbol {
@@ -140,9 +141,13 @@
   pointer-events: none;
 }
 
-.operation__input:hover + .operation__symbol {
-  color: var(--text);
-  background: var(--hover);
+/* Only on devices with a real pointer: touch screens keep :hover applied
+   after a tap, which would leave the last-tapped option looking selected. */
+@media (hover: hover) {
+  .operation__input:hover + .operation__symbol {
+    color: var(--text);
+    background: var(--hover);
+  }
 }
 
 .operation__input:checked + .operation__symbol {
@@ -166,9 +171,17 @@
   border-radius: var(--radius);
   cursor: pointer;
   transition: background-color 120ms;
+  /* Replaces the browser's rectangular tap flash with the :active style. */
+  -webkit-tap-highlight-color: transparent;
 }
 
-.calculator__submit:hover {
+@media (hover: hover) {
+  .calculator__submit:hover {
+    background: var(--accent-hover);
+  }
+}
+
+.calculator__submit:active {
   background: var(--accent-hover);
 }
 
@@ -190,6 +203,7 @@
   margin-top: 1.5rem;
   display: grid;
   align-content: start;
+  container-type: inline-size; /* lets .result__value size itself in cqi */
 }
 
 .result {
@@ -204,18 +218,20 @@
   display: none;
 }
 
-.result__expression,
-.result__equals {
+.result__expression {
   font-size: 1.125rem;
   color: var(--muted);
   overflow-wrap: anywhere;
 }
 
+/* Full size for short results; long ones (formatResult never exceeds 24
+   characters, e.g. -1.7976931348623157e+308) shrink to fit on one line
+   instead of breaking mid-number. A digit is about 0.62em wide. */
 .result__value {
-  font-size: 2.25rem;
+  font-size: clamp(1rem, calc(100cqi / (var(--chars, 1) * 0.62)), 2.25rem);
   font-weight: 650;
   letter-spacing: -0.02em;
-  overflow-wrap: anywhere;
+  overflow-wrap: anywhere; /* last resort only */
 }
 
 .calculator__error {

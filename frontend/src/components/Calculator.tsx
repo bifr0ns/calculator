@@ -1,4 +1,4 @@
-import { useId, useRef, useState, type FormEvent, type RefObject } from 'react'
+import { useId, useRef, useState, type CSSProperties, type RefObject, type SubmitEvent } from 'react'
 import { calculate, type Operation } from '../api/calculatorClient'
 import { formatResult, parseOperand } from '../numbers'
 import './Calculator.css'
@@ -34,6 +34,7 @@ export function Calculator() {
   const latestRequestId = useRef(0)
 
   const isLoading = request.status === 'loading'
+  const resultText = request.status === 'success' ? formatResult(request.result) : ''
 
   function clearResult() {
     latestRequestId.current += 1
@@ -51,7 +52,7 @@ export function Calculator() {
     clearResult()
   }
 
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  async function handleSubmit(event: SubmitEvent<HTMLFormElement>) {
     event.preventDefault()
     if (isLoading) {
       return
@@ -138,9 +139,12 @@ export function Calculator() {
         <output className="result" aria-live="polite">
           {request.status === 'success' && (
             <>
-              <span className="result__expression">{request.expression}</span>{' '}
-              <span className="result__equals">=</span>{' '}
-              <strong className="result__value">{formatResult(request.result)}</strong>
+              {/* The non-breaking space keeps "=" from wrapping onto a line of its own. */}
+              <span className="result__expression">{request.expression}&nbsp;=</span>{' '}
+              {/* --chars lets the CSS shrink long results to fit on one line. */}
+              <strong className="result__value" style={{ '--chars': resultText.length } as CSSProperties}>
+                {resultText}
+              </strong>
             </>
           )}
         </output>
