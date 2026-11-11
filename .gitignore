@@ -1,0 +1,12 @@
+# Go build output
+backend/bin/
+*.exe
+*.test
+*.out
+
+# Editors / OS
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
