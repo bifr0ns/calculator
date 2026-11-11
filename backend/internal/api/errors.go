@@ -9,14 +9,15 @@ import (
 // Error codes sent in the "code" field of error responses. Clients should
 // branch on these, not on the human-readable message.
 const (
-	codeInvalidJSON      = "INVALID_JSON"
-	codeValidation       = "VALIDATION_ERROR"
-	codeDivisionByZero   = "DIVISION_BY_ZERO"
-	codeResultOutOfRange = "RESULT_OUT_OF_RANGE"
-	codePayloadTooLarge  = "PAYLOAD_TOO_LARGE"
-	codeMethodNotAllowed = "METHOD_NOT_ALLOWED"
-	codeNotFound         = "NOT_FOUND"
-	codeInternal         = "INTERNAL_ERROR"
+	codeInvalidJSON          = "INVALID_JSON"
+	codeValidation           = "VALIDATION_ERROR"
+	codeDivisionByZero       = "DIVISION_BY_ZERO"
+	codeResultOutOfRange     = "RESULT_OUT_OF_RANGE"
+	codePayloadTooLarge      = "PAYLOAD_TOO_LARGE"
+	codeUnsupportedMediaType = "UNSUPPORTED_MEDIA_TYPE"
+	codeMethodNotAllowed     = "METHOD_NOT_ALLOWED"
+	codeNotFound             = "NOT_FOUND"
+	codeInternal             = "INTERNAL_ERROR"
 )
 
 // apiError is a failure with a defined HTTP representation.
@@ -30,10 +31,14 @@ func badRequest(code, message string) *apiError {
 	return &apiError{Status: http.StatusBadRequest, Code: code, Message: message}
 }
 
-var errInternal = &apiError{
-	Status:  http.StatusInternalServerError,
-	Code:    codeInternal,
-	Message: "internal server error",
+// internalError returns a new value on every call so no caller can modify a
+// shared instance.
+func internalError() *apiError {
+	return &apiError{
+		Status:  http.StatusInternalServerError,
+		Code:    codeInternal,
+		Message: "internal server error",
+	}
 }
 
 // errorResponse is the JSON body of every error response:
@@ -58,7 +63,7 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	body, err := json.Marshal(v)
 	if err != nil {
 		log.Printf("encode response: %v", err)
-		status = errInternal.Status
+		status = http.StatusInternalServerError
 		body = []byte(`{"error":{"code":"` + codeInternal + `","message":"internal server error"}}`)
 	}
 

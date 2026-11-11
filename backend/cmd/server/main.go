@@ -6,7 +6,7 @@ package main
 
 import (
 	"context"
-	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -56,8 +56,10 @@ func run() error {
 	log.Print("shutting down")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := srv.Shutdown(shutdownCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		return err
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		// Requests still running after the timeout: drop their connections.
+		_ = srv.Close()
+		return fmt.Errorf("graceful shutdown: %w", err)
 	}
 	return nil
 }

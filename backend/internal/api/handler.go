@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime"
 	"net/http"
-	"strings"
 
 	"sezzle-calculator/internal/calculator"
 )
@@ -33,12 +33,9 @@ func NewHandler() http.Handler {
 	return mux
 }
 
-// calculateRequest uses pointers for the operands so that a missing (or null)
-// operand can be told apart from an explicit 0.
 type calculateRequest struct {
-	Operation string   `json:"operation"`
-	A         *float64 `json:"a"`
-	B         *float64 `json:"b"`
+	Operation string
+	A, B      float64
 }
 
 type calculateResponse struct {
@@ -46,13 +43,18 @@ type calculateResponse struct {
 }
 
 func handleCalculate(w http.ResponseWriter, r *http.Request) {
+	if apiErr := checkContentType(r); apiErr != nil {
+		writeError(w, apiErr)
+		return
+	}
+
 	req, apiErr := decodeCalculateRequest(w, r)
 	if apiErr != nil {
 		writeError(w, apiErr)
 		return
 	}
 
-	result, err := calculator.Calculate(calculator.Operation(req.Operation), *req.A, *req.B)
+	result, err := calculator.Calculate(calculator.Operation(req.Operation), req.A, req.B)
 	if err != nil {
 		writeError(w, calculationError(err))
 		return
@@ -61,45 +63,150 @@ func handleCalculate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, calculateResponse{Result: result})
 }
 
-// decodeCalculateRequest parses and validates the body. On success the
-// returned request has a non-empty Operation and non-nil A and B.
+// checkContentType requires a JSON body. Besides making the contract
+// explicit, this means browsers cannot send the request cross-origin as a
+// "simple" request (text/plain or form-encoded) without a CORS preflight.
+func checkContentType(r *http.Request) *apiError {
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" {
+		return &apiError{
+			Status:  http.StatusUnsupportedMediaType,
+			Code:    codeUnsupportedMediaType,
+			Message: "Content-Type must be application/json",
+		}
+	}
+	return nil
+}
+
+// requestFields are the only keys a request may contain, matched exactly.
+var requestFields = map[string]bool{"operation": true, "a": true, "b": true}
+
+// decodeCalculateRequest parses and validates the body.
+//
+// It reads the object key by key instead of unmarshalling into a struct,
+// because encoding/json matches keys case-insensitively ("A" fills a) and
+// lets a repeated key silently overwrite the first; both are rejected here.
 func decodeCalculateRequest(w http.ResponseWriter, r *http.Request) (calculateRequest, *apiError) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
+	fields, apiErr := readObject(json.NewDecoder(r.Body))
+	if apiErr != nil {
+		return calculateRequest{}, apiErr
+	}
 
 	var req calculateRequest
-	if err := dec.Decode(&req); err != nil {
-		return req, decodeError(err)
+	if req.Operation, apiErr = operationField(fields); apiErr != nil {
+		return calculateRequest{}, apiErr
 	}
-
-	// Decode stops after the first JSON value, so read again to make sure
-	// nothing follows it (e.g. `{...}{...}` or `{...} garbage`).
-	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		var maxBytesErr *http.MaxBytesError
-		if errors.As(err, &maxBytesErr) {
-			return req, decodeError(err)
-		}
-		return req, badRequest(codeInvalidJSON, "request body must contain a single JSON object")
+	if req.A, apiErr = operandField(fields, "a"); apiErr != nil {
+		return calculateRequest{}, apiErr
 	}
-
-	switch {
-	case req.Operation == "":
-		return req, badRequest(codeValidation, "operation is required")
-	case req.A == nil:
-		return req, badRequest(codeValidation, "a is required")
-	case req.B == nil:
-		return req, badRequest(codeValidation, "b is required")
+	if req.B, apiErr = operandField(fields, "b"); apiErr != nil {
+		return calculateRequest{}, apiErr
 	}
 	return req, nil
 }
 
-// decodeError translates an encoding/json (or body size) error into an API error.
+// readObject reads exactly one JSON object whose keys are all known and
+// unique, and returns its values undecoded. Only whitespace may follow it.
+func readObject(dec *json.Decoder) (map[string]json.RawMessage, *apiError) {
+	tok, err := dec.Token()
+	if err != nil {
+		return nil, decodeError(err)
+	}
+	if tok != json.Delim('{') {
+		return nil, badRequest(codeInvalidJSON, "request body must be a JSON object")
+	}
+
+	fields := make(map[string]json.RawMessage, len(requestFields))
+	for dec.More() {
+		tok, err := dec.Token()
+		if err != nil {
+			return nil, decodeError(truncated(err))
+		}
+		// Inside an object, Token always returns keys as strings.
+		key, _ := tok.(string)
+		if !requestFields[key] {
+			return nil, badRequest(codeValidation,
+				fmt.Sprintf("unknown field %q (fields are case-sensitive: operation, a, b)", key))
+		}
+		if _, seen := fields[key]; seen {
+			return nil, badRequest(codeValidation, fmt.Sprintf("duplicate field %q", key))
+		}
+
+		var value json.RawMessage
+		if err := dec.Decode(&value); err != nil {
+			return nil, decodeError(truncated(err))
+		}
+		fields[key] = value
+	}
+	if _, err := dec.Token(); err != nil { // the closing '}'
+		return nil, decodeError(truncated(err))
+	}
+
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			return nil, decodeError(err)
+		}
+		return nil, badRequest(codeInvalidJSON, "request body must contain a single JSON object")
+	}
+	return fields, nil
+}
+
+// truncated reports running out of input part-way through the object as
+// invalid JSON rather than as an empty body. Older Go versions (e.g. 1.22)
+// return a plain io.EOF there; newer ones already return io.ErrUnexpectedEOF.
+func truncated(err error) error {
+	if errors.Is(err, io.EOF) {
+		return io.ErrUnexpectedEOF
+	}
+	return err
+}
+
+func operationField(fields map[string]json.RawMessage) (string, *apiError) {
+	raw, ok := fields["operation"]
+	if !ok || isNull(raw) {
+		return "", badRequest(codeValidation, "operation is required")
+	}
+	var op string
+	if err := json.Unmarshal(raw, &op); err != nil {
+		return "", badRequest(codeValidation, "operation must be a string")
+	}
+	if op == "" {
+		return "", badRequest(codeValidation, "operation is required")
+	}
+	return op, nil
+}
+
+func operandField(fields map[string]json.RawMessage, name string) (float64, *apiError) {
+	raw, ok := fields[name]
+	if !ok || isNull(raw) {
+		return 0, badRequest(codeValidation, name+" is required")
+	}
+	var value float64
+	if err := json.Unmarshal(raw, &value); err != nil {
+		if isNumber(raw) {
+			// Valid JSON, but too large for a float64, e.g. 1e400.
+			return 0, badRequest(codeValidation, name+" is out of range")
+		}
+		return 0, badRequest(codeValidation, name+" must be a number")
+	}
+	return value, nil
+}
+
+func isNull(raw json.RawMessage) bool {
+	return string(raw) == "null"
+}
+
+func isNumber(raw json.RawMessage) bool {
+	return len(raw) > 0 && (raw[0] == '-' || (raw[0] >= '0' && raw[0] <= '9'))
+}
+
+// decodeError translates a JSON syntax or body size error into an API error.
 func decodeError(err error) *apiError {
 	var (
 		maxBytesErr *http.MaxBytesError
 		syntaxErr   *json.SyntaxError
-		typeErr     *json.UnmarshalTypeError
 	)
 
 	switch {
@@ -113,29 +220,8 @@ func decodeError(err error) *apiError {
 		return badRequest(codeInvalidJSON, "request body is empty")
 	case errors.As(err, &syntaxErr), errors.Is(err, io.ErrUnexpectedEOF):
 		return badRequest(codeInvalidJSON, "request body is not valid JSON")
-	case errors.As(err, &typeErr):
-		return typeError(typeErr)
-	case strings.HasPrefix(err.Error(), "json: unknown field "):
-		// encoding/json has no typed error for this case; matching the
-		// message is the standard workaround.
-		return badRequest(codeValidation, strings.TrimPrefix(err.Error(), "json: "))
 	default:
-		return badRequest(codeInvalidJSON, "request body is not valid JSON")
-	}
-}
-
-func typeError(e *json.UnmarshalTypeError) *apiError {
-	switch {
-	case e.Field == "":
-		// The body itself is not an object, e.g. `[1, 2]` or `"add"`.
-		return badRequest(codeInvalidJSON, "request body must be a JSON object")
-	case e.Field == "operation":
-		return badRequest(codeValidation, "operation must be a string")
-	case strings.HasPrefix(e.Value, "number"):
-		// A numeric literal that does not fit in a float64, e.g. 1e400.
-		return badRequest(codeValidation, e.Field+" is out of range")
-	default:
-		return badRequest(codeValidation, e.Field+" must be a number")
+		return badRequest(codeInvalidJSON, "request body could not be read")
 	}
 }
 
@@ -159,7 +245,7 @@ func calculationError(err error) *apiError {
 		}
 	default:
 		log.Printf("calculate: unexpected error: %v", err)
-		return errInternal
+		return internalError()
 	}
 }
 

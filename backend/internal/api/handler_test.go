@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -61,6 +62,7 @@ func TestCalculateSuccess(t *testing.T) {
 		{"field order does not matter", `{"b":3,"a":2,"operation":"subtract"}`, -1},
 		{"exponent notation", `{"operation":"multiply","a":1e3,"b":2}`, 2000},
 		{"surrounding whitespace", " \n{\"operation\":\"add\",\"a\":1,\"b\":1}\n ", 2},
+		{"whitespace between tokens", "{ \"operation\" :\t\"add\" ,\n \"a\" : -1.5 , \"b\" : 0.5 }", -1},
 	}
 
 	for _, tt := range tests {
@@ -105,6 +107,11 @@ func TestCalculateErrors(t *testing.T) {
 		{"not JSON at all", `add 1 2`, 400, codeInvalidJSON, "not valid JSON"},
 		{"array instead of object", `[1,2]`, 400, codeInvalidJSON, "JSON object"},
 		{"string instead of object", `"add"`, 400, codeInvalidJSON, "JSON object"},
+		{"null instead of object", `null`, 400, codeInvalidJSON, "JSON object"},
+		{"whitespace only", " \n\t", 400, codeInvalidJSON, "empty"},
+		{"missing comma", `{"operation":"add" "a":1,"b":2}`, 400, codeInvalidJSON, "not valid JSON"},
+		{"truncated after key", `{"operation"`, 400, codeInvalidJSON, "not valid JSON"},
+		{"unclosed object", `{`, 400, codeInvalidJSON, "not valid JSON"},
 		{"trailing garbage", `{"operation":"add","a":1,"b":2} x`, 400, codeInvalidJSON, "single JSON object"},
 		{"two objects", `{"operation":"add","a":1,"b":2}{}`, 400, codeInvalidJSON, "single JSON object"},
 
@@ -115,6 +122,8 @@ func TestCalculateErrors(t *testing.T) {
 		{"missing a", `{"operation":"add","b":2}`, 400, codeValidation, "a is required"},
 		{"missing b", `{"operation":"add","a":1}`, 400, codeValidation, "b is required"},
 		{"null operand", `{"operation":"add","a":null,"b":2}`, 400, codeValidation, "a is required"},
+		{"null operand with spaces", `{ "operation" : "add" , "a" : 1 , "b" : null }`, 400, codeValidation, "b is required"},
+		{"null operation", `{"operation":null,"a":1,"b":2}`, 400, codeValidation, "operation is required"},
 
 		// Invalid types and values
 		{"string operand", `{"operation":"add","a":"1","b":2}`, 400, codeValidation, "a must be a number"},
@@ -122,7 +131,16 @@ func TestCalculateErrors(t *testing.T) {
 		{"object operand", `{"operation":"add","a":{"v":1},"b":2}`, 400, codeValidation, "a must be a number"},
 		{"numeric operation", `{"operation":1,"a":1,"b":2}`, 400, codeValidation, "operation must be a string"},
 		{"operand out of float64 range", `{"operation":"add","a":1e400,"b":1}`, 400, codeValidation, "a is out of range"},
+		{"negative operand out of range", `{"operation":"add","a":1,"b":-1e400}`, 400, codeValidation, "b is out of range"},
 		{"unknown field", `{"operation":"add","a":1,"b":2,"c":3}`, 400, codeValidation, `unknown field "c"`},
+
+		// Keys are case-sensitive and must be unique (encoding/json alone allows both)
+		{"capitalised operation key", `{"Operation":"add","a":1,"b":2}`, 400, codeValidation, `unknown field "Operation"`},
+		{"upper-case operand key", `{"operation":"add","A":1,"b":2}`, 400, codeValidation, `unknown field "A"`},
+		{"upper-case key alongside the real one", `{"operation":"add","A":1,"a":2,"b":0}`, 400, codeValidation, `unknown field "A"`},
+		{"duplicate operand", `{"operation":"add","a":1,"a":5,"b":0}`, 400, codeValidation, `duplicate field "a"`},
+		{"duplicate operation", `{"operation":"add","operation":"divide","a":1,"b":0}`, 400, codeValidation, `duplicate field "operation"`},
+		{"duplicate null operand", `{"operation":"add","a":null,"a":1,"b":0}`, 400, codeValidation, `duplicate field "a"`},
 
 		// Unsupported operations
 		{"unsupported operation", `{"operation":"power","a":2,"b":3}`, 400, codeValidation, `unsupported operation "power"`},
@@ -152,6 +170,44 @@ func TestCalculateErrors(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			rec := serve(t, http.MethodPost, "/api/v1/calculate", tt.body)
 			assertError(t, rec, tt.wantStatus, tt.wantCode, tt.wantMsg)
+		})
+	}
+}
+
+func TestCalculateContentType(t *testing.T) {
+	const body = `{"operation":"add","a":1,"b":2}`
+
+	tests := []struct {
+		contentType string
+		wantStatus  int
+	}{
+		{"application/json", http.StatusOK},
+		{"application/json; charset=utf-8", http.StatusOK},
+		{"Application/JSON", http.StatusOK},
+		{"", http.StatusUnsupportedMediaType},
+		{"text/plain", http.StatusUnsupportedMediaType},
+		{"application/x-www-form-urlencoded", http.StatusUnsupportedMediaType},
+		{"multipart/form-data; boundary=x", http.StatusUnsupportedMediaType},
+		{"application/jsonx", http.StatusUnsupportedMediaType},
+		{"application/json;;", http.StatusUnsupportedMediaType},
+	}
+
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("%q", tt.contentType), func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/calculate", strings.NewReader(body))
+			if tt.contentType != "" {
+				req.Header.Set("Content-Type", tt.contentType)
+			}
+			rec := httptest.NewRecorder()
+			NewHandler().ServeHTTP(rec, req)
+
+			if tt.wantStatus == http.StatusOK {
+				if rec.Code != http.StatusOK {
+					t.Errorf("status = %d, want 200 (body: %s)", rec.Code, rec.Body)
+				}
+				return
+			}
+			assertError(t, rec, tt.wantStatus, codeUnsupportedMediaType, "application/json")
 		})
 	}
 }
