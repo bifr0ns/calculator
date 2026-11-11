@@ -1,5 +1,5 @@
 import { useId, useRef, useState, type CSSProperties, type RefObject, type SubmitEvent } from 'react'
-import { calculate, type Operation } from '../api/calculatorClient'
+import { calculate, type CalculateOutcome, type Operation } from '../api/calculatorClient'
 import { formatResult, parseOperand } from '../numbers'
 import './Calculator.css'
 
@@ -71,7 +71,15 @@ export function Calculator() {
     const requestId = ++latestRequestId.current
     setRequest({ status: 'loading' })
 
-    const outcome = await calculate(operation, a.value, b.value)
+    let outcome: CalculateOutcome
+    try {
+      outcome = await calculate(operation, a.value, b.value)
+    } catch (error) {
+      // calculate() reports failures as outcomes and should never throw; if
+      // a bug makes it throw anyway, don't leave the form stuck "Calculating…".
+      console.error(error)
+      outcome = { ok: false, code: 'CLIENT_ERROR', message: 'Something went wrong. Please try again.' }
+    }
     if (requestId !== latestRequestId.current) {
       return
     }

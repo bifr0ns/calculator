@@ -14,9 +14,47 @@ describe('parseOperand', () => {
     ['007', 7],
     ['  12  ', 12],
     ['-0', -0],
-    ['123456789.123456789', 123456789.12345679], // more digits than a float64 holds
+    ['0.000', 0],
+    ['1.50000000000000000000', 1.5], // trailing zeros are not significant
+    ['000000000000000000000012', 12], // nor are leading ones
+    ['999999999999999', 999999999999999], // 15 significant digits
+    ['-0.123456789012345', -0.123456789012345],
+    ['9007199254740991', 9007199254740991], // 16 digits, but exactly representable
+    ['1' + '0'.repeat(21), 1e21],
+    ['0.' + '0'.repeat(20) + '1', 1e-21],
   ])('accepts %j as %d', (raw, expected) => {
     expect(parseOperand(raw)).toEqual({ ok: true, value: expected })
+  })
+
+  it.each([
+    '9007199254740993', // would be sent as 9007199254740992
+    '12345678901234567890', // would be sent as 12345678901234567000
+    '123456789.123456789',
+    '0.1000000000000000055511151231257827',
+    '-1.0000000000000001',
+  ])('rejects %j, which a float64 cannot hold exactly', (raw) => {
+    expect(parseOperand(raw)).toEqual({
+      ok: false,
+      message: 'This number has too many digits to calculate exactly. Use at most 15 significant digits.',
+    })
+  })
+
+  it('accepts every value with up to 15 significant digits', () => {
+    // Sample across magnitudes; DBL_DIG = 15 guarantees all of these round-trip.
+    for (const text of ['123456789012345', '1.23456789012345', '0.000123456789012345', '-98765.4321098765', '3.14159265358979']) {
+      expect(parseOperand(text)).toMatchObject({ ok: true })
+    }
+  })
+
+  it('rejects numbers too small to represent instead of sending 0', () => {
+    expect(parseOperand('0.' + '0'.repeat(400) + '1')).toEqual({ ok: false, message: 'This number is too small.' })
+  })
+
+  it('handles very long input in linear time', () => {
+    const start = performance.now()
+    parseOperand('0'.repeat(200_000) + '1')
+    parseOperand('1' + '0'.repeat(200_000) + '.5')
+    expect(performance.now() - start).toBeLessThan(500)
   })
 
   it.each(['', '   ', '\t'])('asks for a number when the input is blank (%j)', (raw) => {

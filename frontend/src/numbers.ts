@@ -23,7 +23,41 @@ export function parseOperand(raw: string): ParseResult {
     // Only reachable with hundreds of digits, e.g. "9".repeat(400).
     return { ok: false, message: 'This number is too large.' }
   }
+
+  // A float64 holds about 15-17 significant digits; Number() silently rounds
+  // anything beyond that, so "9007199254740993 + 0" would show a result of
+  // 9007199254740992. Reject input that would not reach the API exactly.
+  if (canonicalDecimal(text) !== canonicalDecimal(String(value))) {
+    return value === 0
+      ? { ok: false, message: 'This number is too small.' }
+      : { ok: false, message: 'This number has too many digits to calculate exactly. Use at most 15 significant digits.' }
+  }
   return { ok: true, value }
+}
+
+/**
+ * Reduces a decimal string to its sign, significant digits and exponent, so
+ * that different spellings of the same number compare equal: "1.50",
+ * "001.5" and "15e-1" all become "15e-1", and every zero becomes "0".
+ * Accepts plain decimals and JavaScript's exponent output ("1e+21").
+ */
+function canonicalDecimal(text: string): string {
+  const [mantissa, exponent = '0'] = text.toLowerCase().split('e')
+  const negative = mantissa.startsWith('-')
+  const [intPart, fracPart = ''] = mantissa.replace('-', '').split('.')
+
+  const withoutLeadingZeros = (intPart + fracPart).replace(/^0+/, '')
+  // A loop rather than /0+$/, which backtracks quadratically on long input.
+  let end = withoutLeadingZeros.length
+  while (end > 0 && withoutLeadingZeros[end - 1] === '0') {
+    end -= 1
+  }
+  const digits = withoutLeadingZeros.slice(0, end)
+  if (digits === '') {
+    return '0'
+  }
+  const trailingZeros = withoutLeadingZeros.length - digits.length
+  return `${negative ? '-' : ''}${digits}e${Number(exponent) - fracPart.length + trailingZeros}`
 }
 
 // 15 significant digits is the most a float64 can round-trip for every

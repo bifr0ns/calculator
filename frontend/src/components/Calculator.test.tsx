@@ -155,6 +155,18 @@ describe('Calculator', () => {
       expect(second).toHaveFocus()
     })
 
+    it('rejects a number that would lose precision, without calling the API', async () => {
+      const { user, first, second, submit } = setup()
+
+      await user.type(first, '9007199254740993')
+      await user.type(second, '0')
+      await user.click(submit)
+
+      expect(calculateMock).not.toHaveBeenCalled()
+      expect(first).toHaveAccessibleDescription(/too many digits/)
+      expect(first).toHaveFocus()
+    })
+
     it('clears the error of a field when that field is edited', async () => {
       const { user, first, second, submit } = setup()
 
@@ -196,6 +208,22 @@ describe('Calculator', () => {
       expect(screen.getByRole('alert')).toHaveTextContent(message)
       expect(result).toBeEmptyDOMElement()
     })
+  })
+
+  it('recovers if the API client throws unexpectedly', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    calculateMock.mockRejectedValue(new Error('bug'))
+    const { user, first, second, submit, result } = setup()
+
+    await user.type(first, '1')
+    await user.type(second, '2')
+    await user.click(submit)
+
+    expect(screen.getByRole('alert')).toHaveTextContent('Something went wrong. Please try again.')
+    expect(result).toBeEmptyDOMElement()
+    expect(submit).toHaveAttribute('aria-disabled', 'false')
+    expect(consoleError).toHaveBeenCalledWith(expect.objectContaining({ message: 'bug' }))
+    consoleError.mockRestore()
   })
 
   describe('clearing stale results', () => {
