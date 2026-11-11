@@ -1,0 +1,3 @@
+# Store and check out text files with LF endings on every OS, so diffs and
+# gofmt are not disturbed by CRLF conversion on Windows.
+* text=auto eol=lf
